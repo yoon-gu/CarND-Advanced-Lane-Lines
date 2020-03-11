@@ -6,6 +6,93 @@ import math
 import os
 
 
+def camera_calibration(img, objpoints, imgpoints, img_size):
+    # Camera calibration
+    ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(
+        objpoints, imgpoints, img_size, None, None)
+    undist = cv2.undistort(img, mtx, dist, None, mtx)
+    return undist
+
+
+def perspective_transform(img, src, dst, img_size):
+    # Perspective Transform
+    M = cv2.getPerspectiveTransform(src, dst)
+    Minv = cv2.getPerspectiveTransform(dst, src)
+    warped = cv2.warpPerspective(img, M, img_size, flags=cv2.INTER_LINEAR)
+    return warped, M, Minv
+
+
+def thresholding(img, s_thresh=(170, 255), sx_thresh=(20, 100)):
+    # HLS image
+    img_hls = cv2.cvtColor(img, cv2.COLOR_BGR2HLS)
+    l_channel = img_hls[:, :, 1]
+    s_channel = img_hls[:, :, 2]
+
+    # Sobel x
+    sobelx = cv2.Sobel(l_channel, cv2.CV_64F, 1, 0)  # Take the derivative in x
+    # Absolute x derivative to accentuate lines away from horizontal
+    abs_sobelx = np.absolute(sobelx)
+    scaled_sobel = np.uint8(255*abs_sobelx/np.max(abs_sobelx))
+
+    # Threshold x gradient
+    sxbinary = np.zeros_like(scaled_sobel)
+    sxbinary[(scaled_sobel >= sx_thresh[0]) &
+             (scaled_sobel <= sx_thresh[1])] = 1
+
+    # Threshold color channel
+    s_binary = np.zeros_like(s_channel)
+    s_binary[(s_channel >= s_thresh[0]) & (s_channel <= s_thresh[1])] = 1
+
+    # Combine the two binary thresholds
+    combined_binary = np.zeros_like(sxbinary)
+    combined_binary[(s_binary == 1) | (sxbinary == 1)] = 1
+
+    return combined_binary
+
+
+def compute_curvature(fit_cr, fity, xm_per_pix, ym_per_pix):
+    fitx = fit_cr[0]*fity**2 + fit_cr[1]*fity + fit_cr[2]
+    fit_cr = np.polyfit(fity*ym_per_pix, fitx*xm_per_pix, 2)
+    y_eval = np.max(fity)
+    radius_curvature = (
+        (1 + (2*fit_cr[0]*y_eval*ym_per_pix + fit_cr[1])**2)**1.5) / np.absolute(2*fit_cr[0])
+    return radius_curvature
+
+
+def draw_lanes_information(undist, left_fit_x, right_fit_x, ploty, Minv,
+                           left_curverad, right_curverad,
+                           xm_per_pix, ym_per_pix):
+    # Create an image to draw the lines on
+    color_warp = np.zeros_like(undist).astype(np.uint8)
+
+    # Recast the x and y points into usable format for cv2.fillPoly()
+    pts_left = np.array([np.transpose(np.vstack([left_fit_x, ploty]))])
+    pts_right = np.array(
+        [np.flipud(np.transpose(np.vstack([right_fit_x, ploty])))])
+    pts = np.hstack((pts_left, pts_right))
+
+    # Draw the lane onto the warped blank image
+    cv2.fillPoly(color_warp, np.int_([pts]), (0, 255, 0))
+
+    # Warp the blank back to original image space using inverse perspective matrix (Minv)
+    newwarp = cv2.warpPerspective(
+        color_warp, Minv, (undist.shape[1], undist.shape[0]))
+    # Combine the result with the original image
+    result = cv2.addWeighted(undist, 1, newwarp, 0.3, 0)
+
+    center = undist.shape[1]/2 - (left_fit_x[0] + right_fit_x[0]) / 2
+    left_right = 'left' if center < 0 else 'left'
+    text_string = "Vihicle is {} of center {:2.2f}m".format(
+        left_right, np.abs(center * xm_per_pix))
+    result = cv2.putText(result, text_string, (50, 50), cv2.FONT_HERSHEY_SIMPLEX,
+                         1.5, (255, 255, 255), 2, cv2.LINE_AA)
+    text_string = "Radius of Curvature: (L: {:4.0f}m, R: {:4.0f}m)".format(
+        left_curverad, right_curverad)
+    result = cv2.putText(result, text_string, (50, 100), cv2.FONT_HERSHEY_SIMPLEX,
+                         1.5, (255, 255, 255), 2, cv2.LINE_AA)
+    return result
+
+
 def find_lane_pixels(binary_warped):
     # Take a histogram of the bottom half of the image
     histogram = np.sum(binary_warped[binary_warped.shape[0]//2:, :], axis=0)
@@ -143,91 +230,3 @@ def fit_polynomial(binary_warped, previous_lanes=None):
         right_fitx = None
 
     return left_fitx, ploty, right_fitx, ploty, left_fit, right_fit
-
-
-def camera_calibration(img, objpoints, imgpoints, img_size):
-    # Camera calibration
-    ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(
-        objpoints, imgpoints, img_size, None, None)
-    undist = cv2.undistort(img, mtx, dist, None, mtx)
-    return undist
-
-
-def perspective_transform(img, src, dst, img_size):
-    # Perspective Transform
-    M = cv2.getPerspectiveTransform(src, dst)
-    Minv = cv2.getPerspectiveTransform(dst, src)
-    warped = cv2.warpPerspective(img, M, img_size, flags=cv2.INTER_LINEAR)
-    return warped, M, Minv
-
-
-def thresholding(img, s_thresh=(170, 255), sx_thresh=(20, 100)):
-    # HLS image
-    img_hls = cv2.cvtColor(img, cv2.COLOR_BGR2HLS)
-    l_channel = img_hls[:, :, 1]
-    s_channel = img_hls[:, :, 2]
-
-    # Sobel x
-    sobelx = cv2.Sobel(l_channel, cv2.CV_64F, 1, 0)  # Take the derivative in x
-    # Absolute x derivative to accentuate lines away from horizontal
-    abs_sobelx = np.absolute(sobelx)
-    scaled_sobel = np.uint8(255*abs_sobelx/np.max(abs_sobelx))
-
-    # Threshold x gradient
-    sxbinary = np.zeros_like(scaled_sobel)
-    sxbinary[(scaled_sobel >= sx_thresh[0]) &
-             (scaled_sobel <= sx_thresh[1])] = 1
-
-    # Threshold color channel
-    s_binary = np.zeros_like(s_channel)
-    s_binary[(s_channel >= s_thresh[0]) & (s_channel <= s_thresh[1])] = 1
-
-    # Combine the two binary thresholds
-    combined_binary = np.zeros_like(sxbinary)
-    combined_binary[(s_binary == 1) | (sxbinary == 1)] = 1
-
-    return combined_binary
-
-
-def compute_curvature(fit_cr, fity, xm_per_pix, ym_per_pix):
-    fitx = fit_cr[0]*fity**2 + fit_cr[1]*fity + fit_cr[2]
-    fit_cr = np.polyfit(fity*ym_per_pix, fitx*xm_per_pix, 2)
-    y_eval = np.max(fity)
-    radius_curvature = (
-        (1 + (2*fit_cr[0]*y_eval*ym_per_pix + fit_cr[1])**2)**1.5) / np.absolute(2*fit_cr[0])
-    return radius_curvature
-
-
-def draw_lanes_information(undist, left_fit_x, right_fit_x, ploty, Minv,
-                           left_curverad, right_curverad,
-                           left_best_x, right_best_x,
-                           xm_per_pix, ym_per_pix):
-    # Create an image to draw the lines on
-    color_warp = np.zeros_like(undist).astype(np.uint8)
-
-    # Recast the x and y points into usable format for cv2.fillPoly()
-    pts_left = np.array([np.transpose(np.vstack([left_fit_x, ploty]))])
-    pts_right = np.array(
-        [np.flipud(np.transpose(np.vstack([right_fit_x, ploty])))])
-    pts = np.hstack((pts_left, pts_right))
-
-    # Draw the lane onto the warped blank image
-    cv2.fillPoly(color_warp, np.int_([pts]), (0, 255, 0))
-
-    # Warp the blank back to original image space using inverse perspective matrix (Minv)
-    newwarp = cv2.warpPerspective(
-        color_warp, Minv, (undist.shape[1], undist.shape[0]))
-    # Combine the result with the original image
-    result = cv2.addWeighted(undist, 1, newwarp, 0.3, 0)
-
-    center = undist.shape[1]/2 - (left_best_x[0] + right_best_x[0]) / 2
-    left_right = 'left' if center < 0 else 'left'
-    text_string = "Vihicle is {} of center {:2.2f}m".format(
-        left_right, np.abs(center * xm_per_pix))
-    result = cv2.putText(result, text_string, (50, 50), cv2.FONT_HERSHEY_SIMPLEX,
-                         1.5, (255, 255, 255), 2, cv2.LINE_AA)
-    text_string = "Radius of Curvature: (L: {:4.0f}m, R: {:4.0f}m)".format(
-        left_curverad, right_curverad)
-    result = cv2.putText(result, text_string, (50, 100), cv2.FONT_HERSHEY_SIMPLEX,
-                         1.5, (255, 255, 255), 2, cv2.LINE_AA)
-    return result
